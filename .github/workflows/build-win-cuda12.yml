@@ -30,13 +30,17 @@ jobs:
 
       # windows runners ship NO CUDA toolkit; nvcc must be installed.
       # Jimver/cuda-toolkit's wrapper reproducibly fails on windows-2022 with
-      # exit 0xE0E00019 (SFX "not enough free space for extracting") across all
-      # methods/components/caches. Install via the network installer directly
-      # (proven workaround, Jimver#436) and set CUDA_PATH for downstream steps.
+      # exit 0xE0E00019 - the CUDA 7z-SFX installer can't extract ("not enough
+      # free space for extracting"). Install the network installer directly and
+      # redirect its TEMP to the D: workspace volume, which has more room.
       - name: Install CUDA Toolkit 12.4
         id: cuda-toolkit
         shell: pwsh
         run: |
+          Get-PSDrive C,D | ForEach-Object { "{0}: free {1} GB" -f $_.Name, [math]::Round($_.Free/1GB,1) }
+          New-Item -ItemType Directory -Force -Path 'D:\a\cudatmp' | Out-Null
+          $env:TEMP = 'D:\a\cudatmp'
+          $env:TMP  = 'D:\a\cudatmp'
           $version = "12.4.1"
           $short   = "12.4"
           $url     = "https://developer.download.nvidia.com/compute/cuda/$version/network_installers/cuda_${version}_windows_network.exe"
