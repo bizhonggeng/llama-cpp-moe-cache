@@ -36,7 +36,7 @@ jobs:
         uses: Jimver/cuda-toolkit@v0.2.30
         with:
           cuda: '12.4.1'
-          method: 'network'
+          method: 'local'
           sub-packages: '["nvcc", "cudart", "cublas", "cublas_dev", "cccl", "visual_studio_integration"]'
           log-file-suffix: 'win-cuda12.txt'
 
