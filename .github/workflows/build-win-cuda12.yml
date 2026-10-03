@@ -47,11 +47,17 @@ jobs:
 
           Write-Host "Installing sub-packages (nvcc, cudart, cublas, cublas_dev, cccl)..."
           $packages = "nvcc_$short cudart_$short cublas_$short cublas_dev_$short cccl_$short"
-          Start-Process -FilePath .\cuda_installer.exe -ArgumentList "-s $packages" -Wait -NoNewWindow
-          if ($LASTEXITCODE -ne 0) { throw "CUDA installer exit code $LASTEXITCODE" }
-
+          $p = Start-Process -FilePath .\cuda_installer.exe -ArgumentList "-s $packages" -PassThru -NoNewWindow
+          # The CUDA SFX launcher spawns a child that does the real install and
+          # returns before it finishes, so -PassThru is NOT enough: poll for nvcc.
           $cudaPath = "C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v$short"
-          if (-not (Test-Path "$cudaPath\bin\nvcc.exe")) { throw "nvcc not found at $cudaPath" }
+          $deadline = (Get-Date).AddMinutes(8)
+          while (-not (Test-Path "$cudaPath\bin\nvcc.exe") -and (Get-Date) -lt $deadline) {
+            Start-Sleep -Seconds 5
+          }
+          if (-not (Test-Path "$cudaPath\bin\nvcc.exe")) {
+            throw "nvcc not found at $cudaPath within 8m (installer exit code $($p.ExitCode))"
+          }
           Write-Host "CUDA installed at: $cudaPath"
           "CUDA_PATH=$cudaPath" | Out-File -Append $env:GITHUB_OUTPUT
           "CUDA_PATH=$cudaPath" | Out-File -Append $env:GITHUB_ENV
