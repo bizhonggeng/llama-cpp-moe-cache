@@ -45,7 +45,8 @@ set(LLAMA_CORE_SOURCES
 
 add_library(llama
             ../include/llama.h
-            ${LLAMA_CORE_SOURCES}
+${LLAMA_CORE_SOURCES}
+            llama-moecache.cpp
             unicode.h
             ${LLAMA_MODELS_SOURCES}
             )
