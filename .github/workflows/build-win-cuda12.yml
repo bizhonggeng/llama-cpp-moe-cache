@@ -29,8 +29,10 @@ jobs:
         uses: actions/checkout@v4
 
       # windows runners ship NO CUDA toolkit; nvcc must be installed.
-      # method: network pulls only the sub-packages listed, far faster than
-      # the ~3 GB local installer.
+      # method: local downloads the full installer. use-github-cache/use-local-cache
+      # MUST be false: Jimver's cache logic fills the runner disk and the CUDA
+      # SFX installer fails with exit 0xE0E00019 ("not enough free space for
+      # extracting"). See Jimver/cuda-toolkit issues 386/390/424.
       - name: Install CUDA Toolkit 12.4
         id: cuda-toolkit
         uses: Jimver/cuda-toolkit@v0.2.30
@@ -39,6 +41,8 @@ jobs:
           method: 'local'
           sub-packages: '["nvcc", "cudart", "cublas", "cublas_dev", "cccl"]'
           log-file-suffix: 'win-cuda12.txt'
+          use-github-cache: false
+          use-local-cache: false
 
       - name: Show toolchain
         shell: cmd
