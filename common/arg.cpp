@@ -2552,6 +2552,15 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
             params.n_moe_cache_inserts = value;
         }
     ).set_env("LLAMA_ARG_MOE_EXPERT_CACHE_INSERTS"));
+    add_opt(common_arg(
+        {"--moe-expert-cache-budget"}, "MiB",
+        string_format("device-memory budget for the MoE expert cache in MiB; derives the slot count "
+                      "and disables the cache when the budget cannot reach the break-even floor "
+                      "(2x n_expert_used) (default: %g)", params.n_moe_cache_budget_mib),
+        [](common_params & params, float value) {
+            params.n_moe_cache_budget_mib = value;
+        }
+    ).set_env("LLAMA_ARG_MOE_EXPERT_CACHE_BUDGET"));
     if (ex == LLAMA_EXAMPLE_SERVER) {
         // this is to make sure this option appears in the server-specific section of the help message
         add_opt(common_arg(

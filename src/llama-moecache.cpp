@@ -6,6 +6,7 @@
 #include "ggml.h"
 #include "ggml-backend.h"
 
+#include <algorithm>
 #include <cinttypes>
 #include <condition_variable>
 #include <cstdlib>
@@ -144,7 +145,7 @@ void set_table_entry(llama_moe_cache_layer & pub, int32_t expert, int32_t slot_o
 
 } // namespace
 
-void llama_moe_cache_init(const llama_model & model, int32_t n_slots, int32_t max_inserts) {
+void llama_moe_cache_init(const llama_model & model, int32_t n_slots, int32_t max_inserts, float budget_mib) {
     std::lock_guard<std::mutex> init_lock(g_init_mtx);
     if (g_init_done) {
         return;
@@ -181,6 +182,72 @@ void llama_moe_cache_init(const llama_model & model, int32_t n_slots, int32_t ma
                 continue; // no device home for the cache
             }
             groups[ggml_backend_buffer_get_type(l.ffn_gate_inp->buffer)].push_back({(int) il, &l});
+        }
+
+        // ---- budget-driven slot sizing (small-VRAM adaptation) -------------
+        //
+        // Device cost of the pool is  N slots * L layers * bytes-per-expert,
+        // where bytes-per-expert is the sum of the up/gate/down per-expert
+        // strides. Two measured constraints decide N:
+        //
+        //   (a) floor: RFC ggml-org/llama.cpp#28248 reports N == top_k as a
+        //       full-miss worst case that is measurably SLOWER than master,
+        //       with gains appearing only from roughly 2x top_k upward.
+        //       Below the floor we refuse to run rather than run a net loss.
+        //   (b) ceiling: residency is never free. koren1712 measured 8 GiB
+        //       slab 8.70 t/s vs 16 GiB slab 7.16 t/s at identical hit counts
+        //       and identical streamed bytes - past working-set coverage,
+        //       extra residency buys no fewer reads and only adds pressure.
+        //       Hence a budget is the user-facing knob, not a slot count.
+        if (budget_mib > 0.0f && !groups.empty()) {
+            size_t n_cand = 0;
+            double bpe_sum = 0.0; // bytes per expert (up + gate + down)
+
+            for (auto & g : groups) {
+                for (auto & c : g.second) {
+                    bpe_sum += (double) c.l->ffn_up_exps->nb[2]
+                             + (double) c.l->ffn_gate_exps->nb[2]
+                             + (double) c.l->ffn_down_exps->nb[2];
+                    n_cand++;
+                }
+            }
+
+            if (n_cand == 0 || bpe_sum <= 0.0) {
+                LLAMA_LOG_WARN("%s: cannot size the cache from the budget - disabled\n", __func__);
+                delete mc;
+                g_init_done = true;
+                return;
+            }
+
+            const double bpe    = bpe_sum / (double) n_cand;
+            const double budget = (double) budget_mib * 1024.0 * 1024.0;
+
+            // N slots on each of n_cand layers must fit in the budget
+            const int32_t n_fit = (int32_t) (budget / (bpe * (double) n_cand));
+
+            const int32_t top_k   = model.hparams.n_expert_used > 0 ? model.hparams.n_expert_used : 8;
+            const int32_t n_floor = 2 * top_k;
+
+            if (n_fit < n_floor) {
+                LLAMA_LOG_WARN(
+                    "%s: budget of %.0f MiB fits only %d slot(s)/layer across %zu layer(s) "
+                    "(%.2f MiB per expert); %d are needed to beat master (2x top_k=%d) - cache disabled\n",
+                    __func__, (double) budget_mib, n_fit, n_cand,
+                    bpe / 1024.0 / 1024.0, n_floor, top_k);
+                delete mc;
+                g_init_done = true;
+                return;
+            }
+
+            n_slots = (n_slots > 0) ? std::min(n_slots, n_fit) : n_fit;
+            mc->n_slots = n_slots;
+
+            LLAMA_LOG_INFO("%s: budget %.0f MiB -> %d slots/layer across %zu layer(s), "
+                           "%.2f MiB per expert (%.1f MiB device, floor %d)\n",
+                           __func__, (double) budget_mib, n_slots, n_cand,
+                           bpe / 1024.0 / 1024.0,
+                           bpe * (double) n_cand * (double) n_slots / 1024.0 / 1024.0,
+                           n_floor);
         }
 
         if (groups.empty()) {
