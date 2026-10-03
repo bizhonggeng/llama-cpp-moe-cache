@@ -1,0 +1,111 @@
+name: build-win-cuda12
+
+# Builds llama-server / llama-bench for Windows x64 + CUDA 12 + AVX2 or AVX-512.
+# The runner has NO GPU: nvcc only needs the toolkit, not a device.
+# Run from the Actions tab (workflow_dispatch) or push to the branch below.
+
+on:
+  workflow_dispatch:
+    inputs:
+      cuda_arch:
+        description: 'CUDA arch: 86 = RTX 3050/3050Ti/3060, 89 = RTX 40xx, 75 = RTX 20xx, 61 = GTX 10xx'
+        required: false
+        default: '86'
+      avx512:
+        description: 'Target CPU supports AVX-512 (true) or AVX2 only (false)'
+        required: false
+        default: 'true'
+        type: choice
+        options: [ 'true', 'false' ]
+  push:
+    branches: [ build-win-cuda12 ]
+
+jobs:
+  build:
+    runs-on: windows-2022
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # windows runners ship NO CUDA toolkit; nvcc must be installed.
+      # method: network pulls only the sub-packages listed, far faster than
+      # the ~3 GB local installer.
+      - name: Install CUDA Toolkit 12.4
+        id: cuda-toolkit
+        uses: Jimver/cuda-toolkit@v0.2.30
+        with:
+          cuda: '12.4.1'
+          method: 'network'
+          sub-packages: '["nvcc", "cudart", "cublas", "cublas_dev", "cccl", "visual_studio_integration"]'
+          log-file-suffix: 'win-cuda12.txt'
+
+      - name: Show toolchain
+        shell: cmd
+        run: |
+          nvcc -V
+          cmake --version
+          echo CUDA_PATH=%CUDA_PATH%
+
+      - name: Report the applied MoE cache patch
+        shell: bash
+        run: |
+          echo "--- moecache files ---"
+          ls -l src/llama-moecache.cpp src/llama-moecache.h || echo "!! moecache sources MISSING"
+          echo "--- budget knob ---"
+          grep -n "moe-expert-cache-budget" common/arg.cpp || echo "!! budget knob MISSING - patch not applied"
+          echo "--- init signature ---"
+          grep -n "llama_moe_cache_init" src/llama-context.cpp || echo "!! init call MISSING"
+
+      - name: Configure
+        shell: cmd
+        env:
+          AVX512: ${{ github.event.inputs.avx512 || 'true' }}
+        run: |
+          set CUDA_ARCH=${{ github.event.inputs.cuda_arch || '86' }}
+          if "%AVX512%"=="true" (
+            set AVX_FLAGS=-DGGML_AVX512=ON -DGGML_BMI2=ON
+            set AVX_TAG=avx512
+          ) else (
+            set AVX_FLAGS=-DGGML_AVX512=OFF -DGGML_BMI2=OFF
+            set AVX_TAG=avx2
+          )
+          echo arch=%CUDA_ARCH% avx=%AVX_TAG%
+          cmake -S . -B build ^
+            -G "Visual Studio 17 2022" -A x64 ^
+            -DGGML_CUDA=ON ^
+            -DCMAKE_CUDA_ARCHITECTURES=%CUDA_ARCH% ^
+            -DGGML_NATIVE=OFF ^
+            -DGGML_AVX=ON ^
+            -DGGML_AVX2=ON ^
+            -DGGML_FMA=ON ^
+            -DGGML_F16C=ON ^
+            %AVX_FLAGS% ^
+            -DLLAMA_BUILD_SERVER=ON ^
+            -DBUILD_SHARED_LIBS=OFF ^
+            -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        shell: cmd
+        run: cmake --build build --config Release -j %NUMBER_OF_PROCESSORS%
+
+      - name: List binaries
+        shell: bash
+        run: ls -lh build/bin/Release/*.exe
+
+      - name: Bundle CUDA 12 runtime DLLs
+        shell: cmd
+        run: |
+          mkdir dist
+          copy build\bin\Release\*.exe dist\
+          copy "%CUDA_PATH%\bin\cudart64_*.dll" dist\
+          copy "%CUDA_PATH%\bin\cublas64_*.dll" dist\
+          copy "%CUDA_PATH%\bin\cublasLt64_*.dll" dist\
+          copy LICENSE dist\LICENSE-llama.cpp.txt
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: llama-cpp-win-cuda12-sm${{ github.event.inputs.cuda_arch || '86' }}-${{ github.event.inputs.avx512 == 'false' && 'avx2' || 'avx512' }}
+          path: dist\
+          retention-days: 30
